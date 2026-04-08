@@ -288,25 +288,27 @@ func syncRepo(pair RepoPair) {
 
 	// 克隆源仓库
 	sourceURL := getRepoURL(pair.SourceRepo, pair.SourceToken)
+	targetURL := getRepoURL(pair.TargetRepo, pair.TargetToken)
+
 	addLog(pair.ID, "开始克隆源仓库: "+pair.SourceRepo)
-	addLog(pair.ID, "构建的仓库 URL: "+sourceURL)
+	addLog(pair.ID, "构建的源仓库 URL: "+sourceURL)
 	addLog(pair.ID, "开始克隆...")
 
 	// 使用系统 Git 命令克隆仓库
-	cmd := exec.Command("git", "clone", "--depth", "1", sourceURL, tmpDir)
+	cmd := exec.Command("git", "clone", sourceURL, tmpDir)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
 
 	if err != nil {
-		errorMsg := fmt.Sprintf("Clone failed: %v", err)
+		errorMsg := fmt.Sprintf("克隆源仓库失败: %v", err)
 		updateStatus(pair.ID, "error", errorMsg)
 		addLog(pair.ID, errorMsg)
 		addLog(pair.ID, "尝试使用 HTTP 协议...")
 		// 尝试使用 HTTP 协议
 		httpURL := strings.Replace(sourceURL, "https://", "http://", 1)
 		addLog(pair.ID, "尝试使用 HTTP URL: "+httpURL)
-		cmd = exec.Command("git", "clone", "--depth", "1", httpURL, tmpDir)
+		cmd = exec.Command("git", "clone", httpURL, tmpDir)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		err = cmd.Run()
@@ -321,20 +323,141 @@ func syncRepo(pair RepoPair) {
 		addLog(pair.ID, "源仓库克隆成功")
 	}
 
-	// 提交并推送到目标仓库
-	addLog(pair.ID, "开始推送到目标仓库: "+pair.TargetRepo)
-	err = pushToTarget(tmpDir, pair)
-	if err != nil {
-		errorMsg := fmt.Sprintf("Push failed: %v", err)
+	// 设置 Git 配置
+	cmd = exec.Command("git", "config", "user.name", "Git Sync Tool")
+	cmd.Dir = tmpDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		errorMsg := fmt.Sprintf("设置用户名失败: %v", err)
 		updateStatus(pair.ID, "error", errorMsg)
 		addLog(pair.ID, errorMsg)
 		return
 	}
+
+	cmd = exec.Command("git", "config", "user.email", "sync@git-tool.local")
+	cmd.Dir = tmpDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		errorMsg := fmt.Sprintf("设置邮箱失败: %v", err)
+		updateStatus(pair.ID, "error", errorMsg)
+		addLog(pair.ID, errorMsg)
+		return
+	}
+
+	// 添加目标仓库作为远程
+	addLog(pair.ID, "添加目标仓库作为远程...")
+	cmd = exec.Command("git", "remote", "add", "target", targetURL)
+	cmd.Dir = tmpDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// 远程可能已存在，尝试更新
+		cmd = exec.Command("git", "remote", "set-url", "target", targetURL)
+		cmd.Dir = tmpDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			errorMsg := fmt.Sprintf("添加目标仓库远程失败: %v", err)
+			updateStatus(pair.ID, "error", errorMsg)
+			addLog(pair.ID, errorMsg)
+			return
+		}
+	}
+
+	// 拉取目标仓库的最新变更
+	addLog(pair.ID, "拉取目标仓库的最新变更...")
+	cmd = exec.Command("git", "fetch", "target")
+	cmd.Dir = tmpDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		errorMsg := fmt.Sprintf("拉取目标仓库失败: %v", err)
+		updateStatus(pair.ID, "error", errorMsg)
+		addLog(pair.ID, errorMsg)
+		return
+	}
+
+	// 合并目标仓库的变更到当前分支
+	addLog(pair.ID, "合并目标仓库的变更...")
+	cmd = exec.Command("git", "merge", "target/main", "--allow-unrelated-histories")
+	cmd.Dir = tmpDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// 尝试合并 master 分支
+		cmd = exec.Command("git", "merge", "target/master", "--allow-unrelated-histories")
+		cmd.Dir = tmpDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			// 合并失败，尝试使用 --strategy-option=ours
+			cmd = exec.Command("git", "merge", "target/main", "--allow-unrelated-histories", "--strategy-option=ours")
+			cmd.Dir = tmpDir
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				// 再次尝试 master 分支
+				cmd = exec.Command("git", "merge", "target/master", "--allow-unrelated-histories", "--strategy-option=ours")
+				cmd.Dir = tmpDir
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if err := cmd.Run(); err != nil {
+					errorMsg := fmt.Sprintf("合并目标仓库变更失败: %v", err)
+					updateStatus(pair.ID, "error", errorMsg)
+					addLog(pair.ID, errorMsg)
+					return
+				}
+			}
+		}
+	}
+
+	// 推送合并后的变更到目标仓库
+	addLog(pair.ID, "推送合并后的变更到目标仓库...")
+	cmd = exec.Command("git", "push", "target", "main:main")
+	cmd.Dir = tmpDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// 尝试推送 master 分支
+		cmd = exec.Command("git", "push", "target", "master:master")
+		cmd.Dir = tmpDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			errorMsg := fmt.Sprintf("推送目标仓库失败: %v", err)
+			updateStatus(pair.ID, "error", errorMsg)
+			addLog(pair.ID, errorMsg)
+			return
+		}
+	}
 	addLog(pair.ID, "目标仓库推送成功")
+
+	// 推送合并后的变更到源仓库
+	addLog(pair.ID, "推送合并后的变更到源仓库...")
+	cmd = exec.Command("git", "push", "origin", "main:main")
+	cmd.Dir = tmpDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// 尝试推送 master 分支
+		cmd = exec.Command("git", "push", "origin", "master:master")
+		cmd.Dir = tmpDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			errorMsg := fmt.Sprintf("推送源仓库失败: %v", err)
+			updateStatus(pair.ID, "error", errorMsg)
+			addLog(pair.ID, errorMsg)
+			return
+		}
+	}
+	addLog(pair.ID, "源仓库推送成功")
 
 	successTime := time.Now().Format(time.RFC3339)
 	updateStatus(pair.ID, "success", successTime)
-	addLog(pair.ID, "同步完成: "+successTime)
+	addLog(pair.ID, "双向同步完成: "+successTime)
 }
 
 func getRepoURL(repo, token string) string {
@@ -355,82 +478,6 @@ func getRepoURL(repo, token string) string {
 		repo += ".git"
 	}
 	return repo
-}
-
-func pushToTarget(repoDir string, pair RepoPair) error {
-	// 使用系统 Git 命令推送仓库
-	targetURL := getRepoURL(pair.TargetRepo, pair.TargetToken)
-
-	// 进入仓库目录
-	cmd := exec.Command("git", "config", "user.name", "Git Sync Tool")
-	cmd.Dir = repoDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("设置用户名失败: %v", err)
-	}
-
-	cmd = exec.Command("git", "config", "user.email", "sync@git-tool.local")
-	cmd.Dir = repoDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("设置邮箱失败: %v", err)
-	}
-
-	// 添加所有更改
-	cmd = exec.Command("git", "add", ".")
-	cmd.Dir = repoDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("添加更改失败: %v", err)
-	}
-
-	// 提交更改
-	cmd = exec.Command("git", "commit", "-m", "Sync from "+pair.SourceRepo, "--allow-empty")
-	cmd.Dir = repoDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		// 忽略已更新的错误
-		if !strings.Contains(err.Error(), "nothing to commit") {
-			return fmt.Errorf("提交更改失败: %v", err)
-		}
-	}
-
-	// 添加远程
-	cmd = exec.Command("git", "remote", "remove", "target")
-	cmd.Dir = repoDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Run() // 忽略错误
-
-	cmd = exec.Command("git", "remote", "add", "target", targetURL)
-	cmd.Dir = repoDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("添加远程失败: %v", err)
-	}
-
-	// 推送更改
-	cmd = exec.Command("git", "push", "-f", "target", "main:main")
-	cmd.Dir = repoDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		// 尝试推送 master 分支
-		cmd = exec.Command("git", "push", "-f", "target", "master:master")
-		cmd.Dir = repoDir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("推送失败: %v", err)
-		}
-	}
-
-	return nil
 }
 
 func updateStatus(id, status, lastSync string) {
