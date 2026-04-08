@@ -140,15 +140,20 @@ func saveConfig() error {
 // authMiddleware 验证管理密码
 func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 读取配置时使用读锁
+		configLock.RLock()
+		adminPassword := config.AdminPassword
+		configLock.RUnlock()
+
 		// 如果没有设置管理密码，直接通过
-		if config.AdminPassword == "" {
+		if adminPassword == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// 检查会话中的认证状态
 		session, _ := r.Cookie("auth")
-		if session != nil && session.Value == config.AdminPassword {
+		if session != nil && session.Value == adminPassword {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -157,7 +162,7 @@ func authMiddleware(next http.Handler) http.Handler {
 		if r.Method == "POST" && r.URL.Path == "/login" {
 			r.ParseForm()
 			password := r.Form.Get("password")
-			if password == config.AdminPassword {
+			if password == adminPassword {
 				// 设置认证cookie
 				cookie := &http.Cookie{
 					Name:  "auth",
