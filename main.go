@@ -8,28 +8,27 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/go-git/go-git/v5"
-	gitconfig "github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/gorilla/mux"
 )
 
 // RepoPair 表示一对需要同步的仓库
 type RepoPair struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	SourceRepo  string `json:"source_repo"`
-	SourceToken string `json:"source_token"`
-	TargetRepo  string `json:"target_repo"`
-	TargetToken string `json:"target_token"`
-	Schedule    string `json:"schedule"` // cron 表达式或间隔秒数
-	LastSync    string `json:"last_sync"`
-	Status      string `json:"status"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	SourceRepo  string   `json:"source_repo"`
+	SourceToken string   `json:"source_token"`
+	TargetRepo  string   `json:"target_repo"`
+	TargetToken string   `json:"target_token"`
+	Schedule    string   `json:"schedule"` // cron 表达式或间隔秒数
+	LastSync    string   `json:"last_sync"`
+	Status      string   `json:"status"`
+	Logs        []string `json:"logs"`
 }
 
 // Config 存储所有配置
@@ -50,8 +49,10 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/", handleIndex).Methods("GET")
+	r.HandleFunc("/api/config", getConfig).Methods("GET")
 	r.HandleFunc("/api/pairs", getPairs).Methods("GET")
 	r.HandleFunc("/api/pairs", addPair).Methods("POST")
+	r.HandleFunc("/api/pairs/{id}", getStatus).Methods("GET")
 	r.HandleFunc("/api/pairs/{id}", updatePair).Methods("PUT")
 	r.HandleFunc("/api/pairs/{id}", deletePair).Methods("DELETE")
 	r.HandleFunc("/api/pairs/{id}/sync", triggerSync).Methods("POST")
@@ -261,43 +262,87 @@ func getStatus(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Pair not found", http.StatusNotFound)
 }
 
+func getConfig(w http.ResponseWriter, r *http.Request) {
+	configLock.RLock()
+	defer configLock.RUnlock()
+	json.NewEncoder(w).Encode(config)
+}
+
 func syncRepo(pair RepoPair) {
 	updateStatus(pair.ID, "syncing", "")
+	addLog(pair.ID, "开始同步")
 	defer func() {
 		if r := recover(); r != nil {
-			updateStatus(pair.ID, "error", fmt.Sprintf("%v", r))
+			errorMsg := fmt.Sprintf("%v", r)
+			updateStatus(pair.ID, "error", errorMsg)
+			addLog(pair.ID, "同步失败: "+errorMsg)
 		}
 	}()
 
 	// 创建临时目录
 	tmpDir := filepath.Join(os.TempDir(), "git-sync-"+pair.ID)
+	addLog(pair.ID, "创建临时目录: "+tmpDir)
 	os.RemoveAll(tmpDir)
 	os.MkdirAll(tmpDir, 0755)
 	defer os.RemoveAll(tmpDir)
 
 	// 克隆源仓库
 	sourceURL := getRepoURL(pair.SourceRepo, pair.SourceToken)
-	_, err := git.PlainClone(tmpDir, false, &git.CloneOptions{
-		URL:      sourceURL,
-		Progress: os.Stdout,
-	})
+	addLog(pair.ID, "开始克隆源仓库: "+pair.SourceRepo)
+	addLog(pair.ID, "构建的仓库 URL: "+sourceURL)
+	addLog(pair.ID, "开始克隆...")
+
+	// 使用系统 Git 命令克隆仓库
+	cmd := exec.Command("git", "clone", "--depth", "1", sourceURL, tmpDir)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+
 	if err != nil {
-		updateStatus(pair.ID, "error", fmt.Sprintf("Clone failed: %v", err))
-		return
+		errorMsg := fmt.Sprintf("Clone failed: %v", err)
+		updateStatus(pair.ID, "error", errorMsg)
+		addLog(pair.ID, errorMsg)
+		addLog(pair.ID, "尝试使用 HTTP 协议...")
+		// 尝试使用 HTTP 协议
+		httpURL := strings.Replace(sourceURL, "https://", "http://", 1)
+		addLog(pair.ID, "尝试使用 HTTP URL: "+httpURL)
+		cmd = exec.Command("git", "clone", "--depth", "1", httpURL, tmpDir)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err = cmd.Run()
+		if err != nil {
+			errorMsg = fmt.Sprintf("HTTP 克隆也失败: %v", err)
+			addLog(pair.ID, errorMsg)
+			updateStatus(pair.ID, "error", errorMsg)
+			return
+		}
+		addLog(pair.ID, "HTTP 克隆成功")
+	} else {
+		addLog(pair.ID, "源仓库克隆成功")
 	}
 
 	// 提交并推送到目标仓库
+	addLog(pair.ID, "开始推送到目标仓库: "+pair.TargetRepo)
 	err = pushToTarget(tmpDir, pair)
 	if err != nil {
-		updateStatus(pair.ID, "error", fmt.Sprintf("Push failed: %v", err))
+		errorMsg := fmt.Sprintf("Push failed: %v", err)
+		updateStatus(pair.ID, "error", errorMsg)
+		addLog(pair.ID, errorMsg)
 		return
 	}
+	addLog(pair.ID, "目标仓库推送成功")
 
-	updateStatus(pair.ID, "success", time.Now().Format(time.RFC3339))
+	successTime := time.Now().Format(time.RFC3339)
+	updateStatus(pair.ID, "success", successTime)
+	addLog(pair.ID, "同步完成: "+successTime)
 }
 
 func getRepoURL(repo, token string) string {
 	if strings.Contains(repo, "@") {
+		// 确保 URL 有 .git 后缀
+		if !strings.HasSuffix(repo, ".git") {
+			repo += ".git"
+		}
 		return repo
 	}
 	// 假设是 GitHub 仓库
@@ -305,64 +350,84 @@ func getRepoURL(repo, token string) string {
 	if len(parts) == 2 {
 		return fmt.Sprintf("https://%s@github.com/%s.git", token, repo)
 	}
+	// 确保完整 URL 有 .git 后缀
+	if !strings.HasSuffix(repo, ".git") {
+		repo += ".git"
+	}
 	return repo
 }
 
-
-
 func pushToTarget(repoDir string, pair RepoPair) error {
-	repo, err := git.PlainOpen(repoDir)
-	if err != nil {
-		return err
-	}
-
-	// 创建提交
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return err
-	}
-
-	_, err = worktree.Add(".")
-	if err != nil {
-		return err
-	}
-
-	_, err = worktree.Commit("Sync from "+pair.SourceRepo, &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "Git Sync Tool",
-			Email: "sync@git-tool.local",
-			When:  time.Now(),
-		},
-	})
-	if err != nil && err != git.NoErrAlreadyUpToDate {
-		return err
-	}
-
-	// 添加远程并推送
+	// 使用系统 Git 命令推送仓库
 	targetURL := getRepoURL(pair.TargetRepo, pair.TargetToken)
-	_, err = repo.CreateRemote(&gitconfig.RemoteConfig{
-		Name: "target",
-		URLs: []string{targetURL},
-	})
-	if err != nil {
-		// 远程可能已存在
-		remote, _ := repo.Remote("target")
-		if remote != nil {
-			repo.DeleteRemote("target")
-			_, err = repo.CreateRemote(&gitconfig.RemoteConfig{
-				Name: "target",
-				URLs: []string{targetURL},
-			})
+
+	// 进入仓库目录
+	cmd := exec.Command("git", "config", "user.name", "Git Sync Tool")
+	cmd.Dir = repoDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("设置用户名失败: %v", err)
+	}
+
+	cmd = exec.Command("git", "config", "user.email", "sync@git-tool.local")
+	cmd.Dir = repoDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("设置邮箱失败: %v", err)
+	}
+
+	// 添加所有更改
+	cmd = exec.Command("git", "add", ".")
+	cmd.Dir = repoDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("添加更改失败: %v", err)
+	}
+
+	// 提交更改
+	cmd = exec.Command("git", "commit", "-m", "Sync from "+pair.SourceRepo, "--allow-empty")
+	cmd.Dir = repoDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// 忽略已更新的错误
+		if !strings.Contains(err.Error(), "nothing to commit") {
+			return fmt.Errorf("提交更改失败: %v", err)
 		}
 	}
 
-	err = repo.Push(&git.PushOptions{
-		RemoteName: "target",
-		Force:      true,
-		Progress:   os.Stdout,
-	})
-	if err != nil {
-		return err
+	// 添加远程
+	cmd = exec.Command("git", "remote", "remove", "target")
+	cmd.Dir = repoDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Run() // 忽略错误
+
+	cmd = exec.Command("git", "remote", "add", "target", targetURL)
+	cmd.Dir = repoDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("添加远程失败: %v", err)
+	}
+
+	// 推送更改
+	cmd = exec.Command("git", "push", "-f", "target", "main:main")
+	cmd.Dir = repoDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// 尝试推送 master 分支
+		cmd = exec.Command("git", "push", "-f", "target", "master:master")
+		cmd.Dir = repoDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("推送失败: %v", err)
+		}
 	}
 
 	return nil
@@ -378,6 +443,25 @@ func updateStatus(id, status, lastSync string) {
 			if lastSync != "" {
 				config.RepoPairs[i].LastSync = lastSync
 			}
+			saveConfig()
+			return
+		}
+	}
+}
+
+func addLog(id, message string) {
+	configLock.Lock()
+	defer configLock.Unlock()
+
+	for i, pair := range config.RepoPairs {
+		if pair.ID == id {
+			// 限制日志数量，只保留最近的 100 条
+			logs := config.RepoPairs[i].Logs
+			logs = append(logs, time.Now().Format("2006-01-02 15:04:05")+": "+message)
+			if len(logs) > 100 {
+				logs = logs[len(logs)-100:]
+			}
+			config.RepoPairs[i].Logs = logs
 			saveConfig()
 			return
 		}
@@ -440,11 +524,12 @@ const indexHTML = `<!DOCTYPE html>
     </div>
 
     <h2>Repo Pairs</h2>
+        <button onclick="exportConfig()" style="background:#ffc107; color:black; margin-bottom:15px">Export Config</button>
     <table>
         <thead>
             <tr>
                 <th>Name</th>
-                <th>Source → Target</th>
+                <th>Source -&gt; Target</th>
                 <th>Schedule</th>
                 <th>Last Sync</th>
                 <th>Status</th>
@@ -469,6 +554,7 @@ const indexHTML = `<!DOCTYPE html>
                     '<td>' +
                         '<button onclick="editPair(\'' + p.id + '\')">Edit</button>' +
                         '<button onclick="triggerSync(\'' + p.id + '\')" style="background:#28a745">Sync Now</button>' +
+                        '<button onclick="showLogs(\'' + p.id + '\')" style="background:#17a2b8">Logs</button>' +
                         '<button onclick="deletePair(\'' + p.id + '\')" style="background:#dc3545">Delete</button>' +
                     '</td>' +
                 '</tr>';
@@ -529,6 +615,85 @@ const indexHTML = `<!DOCTYPE html>
                 if (i.type !== 'checkbox') i.value = '';
                 else i.checked = false;
             });
+        }
+
+        async function showLogs(id) {
+            const res = await fetch('/api/pairs/' + id);
+            const p = await res.json();
+            const logs = p.logs || [];
+            const logContent = logs.map(log => '<div>' + log + '</div>').join('');
+            
+            const modal = document.createElement('div');
+            modal.style.position = 'fixed';
+            modal.style.top = '0';
+            modal.style.left = '0';
+            modal.style.width = '100%';
+            modal.style.height = '100%';
+            modal.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+            modal.style.display = 'flex';
+            modal.style.justifyContent = 'center';
+            modal.style.alignItems = 'center';
+            modal.style.zIndex = '1000';
+            
+            const modalContent = document.createElement('div');
+            modalContent.style.backgroundColor = 'white';
+            modalContent.style.padding = '20px';
+            modalContent.style.borderRadius = '5px';
+            modalContent.style.width = '80%';
+            modalContent.style.maxHeight = '80%';
+            modalContent.style.overflow = 'auto';
+            
+            const modalHeader = document.createElement('div');
+            modalHeader.style.display = 'flex';
+            modalHeader.style.justifyContent = 'space-between';
+            modalHeader.style.alignItems = 'center';
+            modalHeader.style.marginBottom = '15px';
+            
+            const modalTitle = document.createElement('h3');
+            modalTitle.textContent = 'Sync Logs for ' + p.name;
+            
+            const closeButton = document.createElement('button');
+            closeButton.textContent = 'Close';
+            closeButton.style.background = '#6c757d';
+            closeButton.style.color = 'white';
+            closeButton.style.border = 'none';
+            closeButton.style.padding = '5px 10px';
+            closeButton.style.borderRadius = '3px';
+            closeButton.style.cursor = 'pointer';
+            closeButton.onclick = () => {
+                document.body.removeChild(modal);
+            };
+            
+            modalHeader.appendChild(modalTitle);
+            modalHeader.appendChild(closeButton);
+            
+            const logContainer = document.createElement('div');
+            logContainer.innerHTML = logContent || '<div>No logs available</div>';
+            logContainer.style.fontFamily = 'monospace';
+            logContainer.style.fontSize = '14px';
+            logContainer.style.lineHeight = '1.5';
+            
+            modalContent.appendChild(modalHeader);
+            modalContent.appendChild(logContainer);
+            modal.appendChild(modalContent);
+            
+            document.body.appendChild(modal);
+        }
+
+        async function exportConfig() {
+            const res = await fetch('/api/config');
+            const config = await res.json();
+            const configJson = JSON.stringify(config, null, 2);
+            
+            const blob = new Blob([configJson], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'git-sync-config.json';
+            a.click();
+            
+            URL.revokeObjectURL(url);
         }
 
         loadPairs();
