@@ -336,6 +336,10 @@ func syncRepo(pair RepoPair) {
 	cmd := exec.Command("git", "clone", sourceURL, tmpDir)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// 设置环境变量，禁用 Git 凭证提示
+	env := os.Environ()
+	env = append(env, "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = env
 	err := cmd.Run()
 
 	if err != nil {
@@ -349,6 +353,10 @@ func syncRepo(pair RepoPair) {
 		cmd = exec.Command("git", "clone", httpURL, tmpDir)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		// 设置环境变量，禁用 Git 凭证提示
+		env := os.Environ()
+		env = append(env, "GIT_TERMINAL_PROMPT=0")
+		cmd.Env = env
 		err = cmd.Run()
 		if err != nil {
 			errorMsg = fmt.Sprintf("HTTP 克隆也失败: %v", err)
@@ -423,6 +431,10 @@ func syncRepo(pair RepoPair) {
 	cmd.Dir = tmpDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// 设置环境变量，禁用 Git 凭证提示
+	env := os.Environ()
+	env = append(env, "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = env
 	if err := cmd.Run(); err != nil {
 		// 忽略拉取失败的错误，可能是因为目标仓库为空
 		addLog(pair.ID, "拉取目标仓库失败（可能是空仓库）: "+err.Error())
@@ -459,18 +471,24 @@ func syncRepo(pair RepoPair) {
 	cmd.Dir = tmpDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// 设置环境变量，禁用 Git 凭证提示
+	env := os.Environ()
+	env = append(env, "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = env
 	if err := cmd.Run(); err != nil {
 		// 尝试推送 master 分支
 		cmd = exec.Command("git", "push", "target", currentBranch+":master")
 		cmd.Dir = tmpDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		cmd.Env = env
 		if err := cmd.Run(); err != nil {
 			// 尝试推送 main 分支
 			cmd = exec.Command("git", "push", "target", currentBranch+":main")
 			cmd.Dir = tmpDir
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
+			cmd.Env = env
 			if err := cmd.Run(); err != nil {
 				errorMsg := fmt.Sprintf("推送目标仓库失败: %v", err)
 				updateStatus(pair.ID, "error", errorMsg)
@@ -487,6 +505,7 @@ func syncRepo(pair RepoPair) {
 	cmd.Dir = tmpDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = env
 	if err := cmd.Run(); err != nil {
 		errorMsg := fmt.Sprintf("推送源仓库失败: %v", err)
 		updateStatus(pair.ID, "error", errorMsg)
