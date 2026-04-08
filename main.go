@@ -50,6 +50,7 @@ func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/", handleIndex).Methods("GET")
 	r.HandleFunc("/api/config", getConfig).Methods("GET")
+	r.HandleFunc("/api/config", importConfig).Methods("POST")
 	r.HandleFunc("/api/pairs", getPairs).Methods("GET")
 	r.HandleFunc("/api/pairs", addPair).Methods("POST")
 	r.HandleFunc("/api/pairs/{id}", getStatus).Methods("GET")
@@ -266,6 +267,43 @@ func getConfig(w http.ResponseWriter, r *http.Request) {
 	configLock.RLock()
 	defer configLock.RUnlock()
 	json.NewEncoder(w).Encode(config)
+}
+
+func importConfig(w http.ResponseWriter, r *http.Request) {
+	var newConfig Config
+	if err := json.NewDecoder(r.Body).Decode(&newConfig); err != nil {
+		http.Error(w, "Invalid config format: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	configLock.Lock()
+	defer configLock.Unlock()
+
+	// 停止所有现有的调度器
+	for _, pair := range config.RepoPairs {
+		if pair.Schedule != "" {
+			stopScheduler(pair.ID)
+		}
+	}
+
+	// 更新配置
+	config = newConfig
+
+	// 启动新的调度器
+	for _, pair := range config.RepoPairs {
+		if pair.Schedule != "" {
+			startScheduler(pair)
+		}
+	}
+
+	// 保存配置
+	if err := saveConfig(); err != nil {
+		http.Error(w, "Failed to save config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "success", "message": "Config imported successfully"})
 }
 
 func syncRepo(pair RepoPair) {
@@ -571,7 +609,11 @@ const indexHTML = `<!DOCTYPE html>
     </div>
 
     <h2>Repo Pairs</h2>
-        <button onclick="exportConfig()" style="background:#ffc107; color:black; margin-bottom:15px">Export Config</button>
+        <div style="margin-bottom:15px">
+            <button onclick="exportConfig()" style="background:#ffc107; color:black; margin-right:10px">Export Config</button>
+            <input type="file" id="configFile" accept=".json" style="display:none">
+            <button onclick="document.getElementById('configFile').click()" style="background:#28a745; color:white">Import Config</button>
+        </div>
     <table>
         <thead>
             <tr>
@@ -742,6 +784,41 @@ const indexHTML = `<!DOCTYPE html>
             
             URL.revokeObjectURL(url);
         }
+
+        async function importConfig(file) {
+            const reader = new FileReader();
+            reader.onload = async function(e) {
+                try {
+                    const config = JSON.parse(e.target.result);
+                    const res = await fetch('/api/config', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(config)
+                    });
+                    
+                    if (res.ok) {
+                        alert('配置导入成功！');
+                        loadPairs();
+                    } else {
+                        alert('配置导入失败：' + await res.text());
+                    }
+                } catch (error) {
+                    alert('配置文件格式错误：' + error.message);
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        // 添加文件选择事件监听器
+        document.getElementById('configFile').addEventListener('change', function(e) {
+            if (e.target.files.length > 0) {
+                importConfig(e.target.files[0]);
+                // 重置文件输入，以便可以再次选择同一个文件
+                e.target.value = '';
+            }
+        });
 
         loadPairs();
     </script>
