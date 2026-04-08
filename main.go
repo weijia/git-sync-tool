@@ -539,8 +539,18 @@ func getRepoURL(repo, token string) string {
 		}
 		// 替换 URL，添加认证信息
 		if strings.HasPrefix(url, "https://") {
+			// 对于Gitee，直接使用token作为用户名
+			if strings.Contains(url, "gitee.com") {
+				return strings.Replace(url, "https://", fmt.Sprintf("https://%s@", token), 1)
+			}
+			// 对于其他服务，使用git作为用户名
 			return strings.Replace(url, "https://", fmt.Sprintf("https://git:%s@", token), 1)
 		} else if strings.HasPrefix(url, "http://") {
+			// 对于Gitee，直接使用token作为用户名
+			if strings.Contains(url, "gitee.com") {
+				return strings.Replace(url, "http://", fmt.Sprintf("http://%s@", token), 1)
+			}
+			// 对于其他服务，使用git作为用户名
 			return strings.Replace(url, "http://", fmt.Sprintf("http://git:%s@", token), 1)
 		}
 		return url
