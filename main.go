@@ -552,15 +552,47 @@ func getRepoURL(repo, token string) string {
 		}
 		// 替换 URL，添加认证信息
 		if strings.HasPrefix(url, "https://") {
-			// 对于Gitee，直接使用token作为用户名
+			// 对于Gitee，使用URL中的用户名:token格式
 			if strings.Contains(url, "gitee.com") {
+				// 提取用户名部分
+				giteeIndex := strings.Index(url, "gitee.com")
+				if giteeIndex != -1 {
+					// 找到gitee.com后面的第一个/和第二个/
+					firstSlash := strings.Index(url[giteeIndex+9:], "/")
+					if firstSlash != -1 {
+						secondSlash := strings.Index(url[giteeIndex+9+firstSlash+1:], "/")
+						if secondSlash != -1 {
+							username := url[giteeIndex+9+firstSlash+1 : giteeIndex+9+firstSlash+1+secondSlash]
+							if username != "" {
+								return strings.Replace(url, "https://", fmt.Sprintf("https://%s:%s@", username, token), 1)
+							}
+						}
+					}
+				}
+				// 如果没有找到用户名，直接使用token
 				return strings.Replace(url, "https://", fmt.Sprintf("https://%s@", token), 1)
 			}
 			// 对于其他服务，使用git作为用户名
 			return strings.Replace(url, "https://", fmt.Sprintf("https://git:%s@", token), 1)
 		} else if strings.HasPrefix(url, "http://") {
-			// 对于Gitee，直接使用token作为用户名
+			// 对于Gitee，使用URL中的用户名:token格式
 			if strings.Contains(url, "gitee.com") {
+				// 提取用户名部分
+				giteeIndex := strings.Index(url, "gitee.com")
+				if giteeIndex != -1 {
+					// 找到gitee.com后面的第一个/和第二个/
+					firstSlash := strings.Index(url[giteeIndex+9:], "/")
+					if firstSlash != -1 {
+						secondSlash := strings.Index(url[giteeIndex+9+firstSlash+1:], "/")
+						if secondSlash != -1 {
+							username := url[giteeIndex+9+firstSlash+1 : giteeIndex+9+firstSlash+1+secondSlash]
+							if username != "" {
+								return strings.Replace(url, "http://", fmt.Sprintf("http://%s:%s@", username, token), 1)
+							}
+						}
+					}
+				}
+				// 如果没有找到用户名，直接使用token
 				return strings.Replace(url, "http://", fmt.Sprintf("http://%s@", token), 1)
 			}
 			// 对于其他服务，使用git作为用户名
