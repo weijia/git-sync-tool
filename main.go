@@ -384,6 +384,19 @@ func syncRepo(pair RepoPair) {
 		return
 	}
 
+	// 获取当前分支
+	cmd = exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = tmpDir
+	output, err := cmd.Output()
+	if err != nil {
+		errorMsg := fmt.Sprintf("获取当前分支失败: %v", err)
+		updateStatus(pair.ID, "error", errorMsg)
+		addLog(pair.ID, errorMsg)
+		return
+	}
+	currentBranch := strings.TrimSpace(string(output))
+	addLog(pair.ID, "当前分支: "+currentBranch)
+
 	// 添加目标仓库作为远程
 	addLog(pair.ID, "添加目标仓库作为远程...")
 	cmd = exec.Command("git", "remote", "add", "target", targetURL)
@@ -411,85 +424,74 @@ func syncRepo(pair RepoPair) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		errorMsg := fmt.Sprintf("拉取目标仓库失败: %v", err)
-		updateStatus(pair.ID, "error", errorMsg)
-		addLog(pair.ID, errorMsg)
-		return
+		// 忽略拉取失败的错误，可能是因为目标仓库为空
+		addLog(pair.ID, "拉取目标仓库失败（可能是空仓库）: "+err.Error())
 	}
 
 	// 合并目标仓库的变更到当前分支
 	addLog(pair.ID, "合并目标仓库的变更...")
-	cmd = exec.Command("git", "merge", "target/main", "--allow-unrelated-histories")
+	cmd = exec.Command("git", "merge", "target/"+currentBranch, "--allow-unrelated-histories", "--strategy-option=ours")
 	cmd.Dir = tmpDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		// 尝试合并 master 分支
-		cmd = exec.Command("git", "merge", "target/master", "--allow-unrelated-histories")
+		cmd = exec.Command("git", "merge", "target/master", "--allow-unrelated-histories", "--strategy-option=ours")
 		cmd.Dir = tmpDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			// 合并失败，尝试使用 --strategy-option=ours
+			// 尝试合并 main 分支
 			cmd = exec.Command("git", "merge", "target/main", "--allow-unrelated-histories", "--strategy-option=ours")
 			cmd.Dir = tmpDir
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {
-				// 再次尝试 master 分支
-				cmd = exec.Command("git", "merge", "target/master", "--allow-unrelated-histories", "--strategy-option=ours")
-				cmd.Dir = tmpDir
-				cmd.Stdout = os.Stdout
-				cmd.Stderr = os.Stderr
-				if err := cmd.Run(); err != nil {
-					errorMsg := fmt.Sprintf("合并目标仓库变更失败: %v", err)
-					updateStatus(pair.ID, "error", errorMsg)
-					addLog(pair.ID, errorMsg)
-					return
-				}
+				// 忽略合并失败的错误，可能是因为目标仓库为空
+				addLog(pair.ID, "合并目标仓库变更失败（可能是空仓库）: "+err.Error())
 			}
 		}
 	}
 
 	// 推送合并后的变更到目标仓库
 	addLog(pair.ID, "推送合并后的变更到目标仓库...")
-	cmd = exec.Command("git", "push", "target", "main:main")
+	cmd = exec.Command("git", "push", "target", currentBranch+":"+currentBranch)
 	cmd.Dir = tmpDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		// 尝试推送 master 分支
-		cmd = exec.Command("git", "push", "target", "master:master")
+		cmd = exec.Command("git", "push", "target", currentBranch+":master")
 		cmd.Dir = tmpDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			errorMsg := fmt.Sprintf("推送目标仓库失败: %v", err)
-			updateStatus(pair.ID, "error", errorMsg)
-			addLog(pair.ID, errorMsg)
-			return
+			// 尝试推送 main 分支
+			cmd = exec.Command("git", "push", "target", currentBranch+":main")
+			cmd.Dir = tmpDir
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				errorMsg := fmt.Sprintf("推送目标仓库失败: %v", err)
+				updateStatus(pair.ID, "error", errorMsg)
+				addLog(pair.ID, errorMsg)
+				return
+			}
 		}
 	}
 	addLog(pair.ID, "目标仓库推送成功")
 
 	// 推送合并后的变更到源仓库
 	addLog(pair.ID, "推送合并后的变更到源仓库...")
-	cmd = exec.Command("git", "push", "origin", "main:main")
+	cmd = exec.Command("git", "push", "origin", currentBranch+":"+currentBranch)
 	cmd.Dir = tmpDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		// 尝试推送 master 分支
-		cmd = exec.Command("git", "push", "origin", "master:master")
-		cmd.Dir = tmpDir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			errorMsg := fmt.Sprintf("推送源仓库失败: %v", err)
-			updateStatus(pair.ID, "error", errorMsg)
-			addLog(pair.ID, errorMsg)
-			return
-		}
+		errorMsg := fmt.Sprintf("推送源仓库失败: %v", err)
+		updateStatus(pair.ID, "error", errorMsg)
+		addLog(pair.ID, errorMsg)
+		return
 	}
 	addLog(pair.ID, "源仓库推送成功")
 
