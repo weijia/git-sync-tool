@@ -505,6 +505,19 @@ func syncRepo(pair RepoPair) {
 
 	// 推送合并后的变更到源仓库
 	addLog(pair.ID, "推送合并后的变更到源仓库...")
+	// 更新 origin 远程的 URL，确保包含正确的认证信息
+	cmd = exec.Command("git", "remote", "set-url", "origin", sourceURL)
+	cmd.Dir = tmpDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		errorMsg := fmt.Sprintf("更新源仓库远程 URL 失败: %v", err)
+		updateStatus(pair.ID, "error", errorMsg)
+		addLog(pair.ID, errorMsg)
+		return
+	}
+	addLog(pair.ID, "已更新源仓库远程 URL: "+sourceURL)
+	// 推送变更到源仓库
 	cmd = exec.Command("git", "push", "origin", currentBranch+":"+currentBranch)
 	cmd.Dir = tmpDir
 	cmd.Stdout = os.Stdout
