@@ -2,3 +2,4 @@
 config.json
 *.log
 .DS_Store
+git-sync-tool

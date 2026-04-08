@@ -432,7 +432,7 @@ func syncRepo(pair RepoPair) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	// 设置环境变量，禁用 Git 凭证提示
-	env := os.Environ()
+	env = os.Environ()
 	env = append(env, "GIT_TERMINAL_PROMPT=0")
 	cmd.Env = env
 	if err := cmd.Run(); err != nil {
@@ -472,7 +472,7 @@ func syncRepo(pair RepoPair) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	// 设置环境变量，禁用 Git 凭证提示
-	env := os.Environ()
+	env = os.Environ()
 	env = append(env, "GIT_TERMINAL_PROMPT=0")
 	cmd.Env = env
 	if err := cmd.Run(); err != nil {
