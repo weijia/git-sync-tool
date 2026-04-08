@@ -182,6 +182,7 @@ func authMiddleware(next http.Handler) http.Handler {
 		// 未认证，返回登录页面
 		tmpl := template.Must(template.New("login").Parse(loginHTML))
 		tmpl.Execute(w, nil)
+		return
 	})
 }
 
