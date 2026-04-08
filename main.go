@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -9,35 +8,28 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
+	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/google/go-github/v57/github"
 	"github.com/gorilla/mux"
-	"golang.org/x/oauth2"
 )
 
 // RepoPair 表示一对需要同步的仓库
 type RepoPair struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	SourceRepo    string `json:"source_repo"`
-	SourceToken   string `json:"source_token"`
-	TargetRepo    string `json:"target_repo"`
-	TargetToken   string `json:"target_token"`
-	Schedule      string `json:"schedule"` // cron 表达式或间隔秒数
-	LastSync      string `json:"last_sync"`
-	Status        string `json:"status"`
-	EnableActions bool   `json:"enable_actions"`
-	DockerImage   string `json:"docker_image"`
-	DockerHubUser string `json:"docker_hub_user"`
-	DockerHubPass string `json:"docker_hub_pass"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	SourceRepo  string `json:"source_repo"`
+	SourceToken string `json:"source_token"`
+	TargetRepo  string `json:"target_repo"`
+	TargetToken string `json:"target_token"`
+	Schedule    string `json:"schedule"` // cron 表达式或间隔秒数
+	LastSync    string `json:"last_sync"`
+	Status      string `json:"status"`
 }
 
 // Config 存储所有配置
@@ -294,15 +286,6 @@ func syncRepo(pair RepoPair) {
 		return
 	}
 
-	// 如果需要生成 GitHub Actions
-	if pair.EnableActions && pair.DockerImage != "" {
-		err = createGitHubActions(tmpDir, pair)
-		if err != nil {
-			updateStatus(pair.ID, "error", fmt.Sprintf("Create actions failed: %v", err))
-			return
-		}
-	}
-
 	// 提交并推送到目标仓库
 	err = pushToTarget(tmpDir, pair)
 	if err != nil {
@@ -325,44 +308,7 @@ func getRepoURL(repo, token string) string {
 	return repo
 }
 
-func createGitHubActions(repoDir string, pair RepoPair) error {
-	actionsDir := filepath.Join(repoDir, ".github", "workflows")
-	os.MkdirAll(actionsDir, 0755)
 
-	workflow := fmt.Sprintf(`name: Build and Push Docker Image
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
-    
-    - name: Login to Docker Hub
-      uses: docker/login-action@v2
-      with:
-        username: %s
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
-    
-    - name: Build and push
-      uses: docker/build-push-action@v4
-      with:
-        context: .
-        push: true
-        tags: %s/%s:latest
-`, pair.DockerHubUser, pair.DockerHubUser, pair.DockerImage)
-
-	workflowFile := filepath.Join(actionsDir, "docker-build.yml")
-	return ioutil.WriteFile(workflowFile, []byte(workflow), 0644)
-}
 
 func pushToTarget(repoDir string, pair RepoPair) error {
 	repo, err := git.PlainOpen(repoDir)
@@ -394,7 +340,7 @@ func pushToTarget(repoDir string, pair RepoPair) error {
 
 	// 添加远程并推送
 	targetURL := getRepoURL(pair.TargetRepo, pair.TargetToken)
-	err = repo.CreateRemote(&git.RemoteConfig{
+	_, err = repo.CreateRemote(&gitconfig.RemoteConfig{
 		Name: "target",
 		URLs: []string{targetURL},
 	})
@@ -403,7 +349,7 @@ func pushToTarget(repoDir string, pair RepoPair) error {
 		remote, _ := repo.Remote("target")
 		if remote != nil {
 			repo.DeleteRemote("target")
-			repo.CreateRemote(&git.RemoteConfig{
+			_, err = repo.CreateRemote(&gitconfig.RemoteConfig{
 				Name: "target",
 				URLs: []string{targetURL},
 			})
@@ -487,23 +433,8 @@ const indexHTML = `<!DOCTYPE html>
             <label>Sync Schedule (e.g., 1h, 30m, 3600s):</label>
             <input type="text" id="schedule" placeholder="Leave empty for manual only">
         </div>
-        <div class="form-group">
-            <label>
-                <input type="checkbox" id="enableActions"> Enable GitHub Actions
-            </label>
-        </div>
-        <div class="form-group">
-            <label>Docker Image Name:</label>
-            <input type="text" id="dockerImage" placeholder="my-app">
-        </div>
-        <div class="form-group">
-            <label>Docker Hub Username:</label>
-            <input type="text" id="dockerHubUser">
-        </div>
-        <div class="form-group">
-            <label>Docker Hub Password/Token:</label>
-            <input type="password" id="dockerHubPass">
-        </div>
+
+
         <button onclick="savePair()">Save</button>
         <button onclick="clearForm()" style="background:#6c757d">Clear</button>
     </div>
@@ -528,20 +459,20 @@ const indexHTML = `<!DOCTYPE html>
             const res = await fetch('/api/pairs');
             const pairs = await res.json();
             const tbody = document.getElementById('pairsTable');
-            tbody.innerHTML = pairs.map(p => \`
-                <tr>
-                    <td>\${p.name}</td>
-                    <td>\${p.source_repo} → \${p.target_repo}</td>
-                    <td>\${p.schedule || 'Manual'}</td>
-                    <td>\${p.last_sync || 'Never'}</td>
-                    <td class="status-\${p.status}">\${p.status}</td>
-                    <td>
-                        <button onclick="editPair('\${p.id}')">Edit</button>
-                        <button onclick="triggerSync('\${p.id}')" style="background:#28a745">Sync Now</button>
-                        <button onclick="deletePair('\${p.id}')" style="background:#dc3545">Delete</button>
-                    </td>
-                </tr>
-            \`).join('');
+            tbody.innerHTML = pairs.map(p => {
+                return '<tr>' +
+                    '<td>' + p.name + '</td>' +
+                    '<td>' + p.source_repo + ' -&gt; ' + p.target_repo + '</td>' +
+                    '<td>' + (p.schedule || 'Manual') + '</td>' +
+                    '<td>' + (p.last_sync || 'Never') + '</td>' +
+                    '<td class="status-' + p.status + '">' + p.status + '</td>' +
+                    '<td>' +
+                        '<button onclick="editPair(\'' + p.id + '\')">Edit</button>' +
+                        '<button onclick="triggerSync(\'' + p.id + '\')" style="background:#28a745">Sync Now</button>' +
+                        '<button onclick="deletePair(\'' + p.id + '\')" style="background:#dc3545">Delete</button>' +
+                    '</td>' +
+                '</tr>';
+            }).join('');
         }
 
         async function savePair() {
@@ -551,15 +482,11 @@ const indexHTML = `<!DOCTYPE html>
                 source_token: document.getElementById('sourceToken').value,
                 target_repo: document.getElementById('targetRepo').value,
                 target_token: document.getElementById('targetToken').value,
-                schedule: document.getElementById('schedule').value,
-                enable_actions: document.getElementById('enableActions').checked,
-                docker_image: document.getElementById('dockerImage').value,
-                docker_hub_user: document.getElementById('dockerHubUser').value,
-                docker_hub_pass: document.getElementById('dockerHubPass').value
+                schedule: document.getElementById('schedule').value
             };
 
             const id = document.getElementById('pairId').value;
-            const url = id ? \`/api/pairs/\${id}\` : '/api/pairs';
+            const url = id ? '/api/pairs/' + id : '/api/pairs';
             const method = id ? 'PUT' : 'POST';
 
             await fetch(url, {
@@ -573,7 +500,7 @@ const indexHTML = `<!DOCTYPE html>
         }
 
         async function editPair(id) {
-            const res = await fetch(\`/api/pairs/\${id}\`);
+            const res = await fetch('/api/pairs/' + id);
             const p = await res.json();
             document.getElementById('pairId').value = p.id;
             document.getElementById('name').value = p.name;
@@ -582,20 +509,16 @@ const indexHTML = `<!DOCTYPE html>
             document.getElementById('targetRepo').value = p.target_repo;
             document.getElementById('targetToken').value = p.target_token;
             document.getElementById('schedule').value = p.schedule || '';
-            document.getElementById('enableActions').checked = p.enable_actions;
-            document.getElementById('dockerImage').value = p.docker_image || '';
-            document.getElementById('dockerHubUser').value = p.docker_hub_user || '';
-            document.getElementById('dockerHubPass').value = p.docker_hub_pass || '';
         }
 
         async function deletePair(id) {
             if (!confirm('Delete this repo pair?')) return;
-            await fetch(\`/api/pairs/\${id}\`, {method: 'DELETE'});
+            await fetch('/api/pairs/' + id, {method: 'DELETE'});
             loadPairs();
         }
 
         async function triggerSync(id) {
-            await fetch(\`/api/pairs/\${id}/sync\`, {method: 'POST'});
+            await fetch('/api/pairs/' + id + '/sync', {method: 'POST'});
             alert('Sync started!');
             loadPairs();
         }
