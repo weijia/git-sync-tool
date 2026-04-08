@@ -508,12 +508,26 @@ func getRepoURL(repo, token string) string {
 		}
 		return repo
 	}
+	if strings.HasPrefix(repo, "http://") || strings.HasPrefix(repo, "https://") {
+		// 完整 URL，添加认证信息和 .git 后缀
+		url := repo
+		if !strings.HasSuffix(url, ".git") {
+			url += ".git"
+		}
+		// 替换 URL，添加认证信息
+		if strings.HasPrefix(url, "https://") {
+			return strings.Replace(url, "https://", fmt.Sprintf("https://%s@", token), 1)
+		} else if strings.HasPrefix(url, "http://") {
+			return strings.Replace(url, "http://", fmt.Sprintf("http://%s@", token), 1)
+		}
+		return url
+	}
 	// 假设是 GitHub 仓库
 	parts := strings.Split(repo, "/")
 	if len(parts) == 2 {
 		return fmt.Sprintf("https://%s@github.com/%s.git", token, repo)
 	}
-	// 确保完整 URL 有 .git 后缀
+	// 确保 URL 有 .git 后缀
 	if !strings.HasSuffix(repo, ".git") {
 		repo += ".git"
 	}
