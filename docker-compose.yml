@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  git-sync-tool:
+    image: ${DOCKERHUB_USERNAME}/git-sync-tool:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - git-sync-config:/app/config
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+
+volumes:
+  git-sync-config:
+    driver: local
+
+networks:
+  default:
+    driver: overlay
+    attachable: true
