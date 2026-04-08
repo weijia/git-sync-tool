@@ -33,7 +33,8 @@ type RepoPair struct {
 
 // Config 存储所有配置
 type Config struct {
-	RepoPairs []RepoPair `json:"repo_pairs"`
+	RepoPairs     []RepoPair `json:"repo_pairs"`
+	AdminPassword string     `json:"admin_password"`
 }
 
 var (
@@ -48,6 +49,8 @@ func main() {
 	initScheduler()
 
 	r := mux.NewRouter()
+
+	// 定义路由
 	r.HandleFunc("/", handleIndex).Methods("GET")
 	r.HandleFunc("/api/config", getConfig).Methods("GET")
 	r.HandleFunc("/api/config", importConfig).Methods("POST")
@@ -59,8 +62,11 @@ func main() {
 	r.HandleFunc("/api/pairs/{id}/sync", triggerSync).Methods("POST")
 	r.HandleFunc("/api/pairs/{id}/status", getStatus).Methods("GET")
 
+	// 应用认证中间件
+	authRouter := authMiddleware(r)
+
 	fmt.Println("Server starting on :8080")
-	log.Fatal(http.ListenAndServe(":8080", r))
+	log.Fatal(http.ListenAndServe(":8080", authRouter))
 }
 
 func initScheduler() {
@@ -129,6 +135,49 @@ func saveConfig() error {
 		return err
 	}
 	return ioutil.WriteFile(configFile, data, 0644)
+}
+
+// authMiddleware 验证管理密码
+func authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 如果没有设置管理密码，直接通过
+		if config.AdminPassword == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 检查会话中的认证状态
+		session, _ := r.Cookie("auth")
+		if session != nil && session.Value == config.AdminPassword {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 处理登录请求
+		if r.Method == "POST" && r.URL.Path == "/login" {
+			r.ParseForm()
+			password := r.Form.Get("password")
+			if password == config.AdminPassword {
+				// 设置认证cookie
+				cookie := &http.Cookie{
+					Name:  "auth",
+					Value: password,
+					Path:  "/",
+				}
+				http.SetCookie(w, cookie)
+				http.Redirect(w, r, "/", http.StatusFound)
+				return
+			}
+			// 密码错误，返回登录页面
+			tmpl := template.Must(template.New("login").Parse(loginHTML))
+			tmpl.Execute(w, map[string]string{"error": "密码错误"})
+			return
+		}
+
+		// 未认证，返回登录页面
+		tmpl := template.Must(template.New("login").Parse(loginHTML))
+		tmpl.Execute(w, nil)
+	})
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -707,6 +756,7 @@ const indexHTML = `<!DOCTYPE html>
             <button onclick="exportConfig()" style="background:#ffc107; color:black; margin-right:10px">Export Config</button>
             <input type="file" id="configFile" accept=".json" style="display:none">
             <button onclick="document.getElementById('configFile').click()" style="background:#28a745; color:white">Import Config</button>
+            <button onclick="showPasswordSettings()" style="background:#6f42c1; color:white; margin-left:10px">设置密码</button>
         </div>
     <table>
         <thead>
@@ -915,6 +965,144 @@ const indexHTML = `<!DOCTYPE html>
         });
 
         loadPairs();
+        
+        async function showPasswordSettings() {
+            const res = await fetch('/api/config');
+            const config = await res.json();
+            
+            const modal = document.createElement('div');
+            modal.style.position = 'fixed';
+            modal.style.top = '0';
+            modal.style.left = '0';
+            modal.style.width = '100%';
+            modal.style.height = '100%';
+            modal.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+            modal.style.display = 'flex';
+            modal.style.justifyContent = 'center';
+            modal.style.alignItems = 'center';
+            modal.style.zIndex = '1000';
+            
+            const modalContent = document.createElement('div');
+            modalContent.style.backgroundColor = 'white';
+            modalContent.style.padding = '20px';
+            modalContent.style.borderRadius = '5px';
+            modalContent.style.width = '400px';
+            
+            const modalHeader = document.createElement('div');
+            modalHeader.style.display = 'flex';
+            modalHeader.style.justifyContent = 'space-between';
+            modalHeader.style.alignItems = 'center';
+            modalHeader.style.marginBottom = '15px';
+            
+            const modalTitle = document.createElement('h3');
+            modalTitle.textContent = '设置管理密码';
+            
+            const closeButton = document.createElement('button');
+            closeButton.textContent = '关闭';
+            closeButton.style.background = '#6c757d';
+            closeButton.style.color = 'white';
+            closeButton.style.border = 'none';
+            closeButton.style.padding = '5px 10px';
+            closeButton.style.borderRadius = '3px';
+            closeButton.style.cursor = 'pointer';
+            closeButton.onclick = () => {
+                document.body.removeChild(modal);
+            };
+            
+            modalHeader.appendChild(modalTitle);
+            modalHeader.appendChild(closeButton);
+            
+            const form = document.createElement('form');
+            form.onSubmit = async (e) => {
+                e.preventDefault();
+                const password = form.password.value;
+                
+                const updateConfig = {
+                    repo_pairs: config.repo_pairs,
+                    admin_password: password
+                };
+                
+                await fetch('/api/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(updateConfig)
+                });
+                
+                alert('密码设置成功！');
+                document.body.removeChild(modal);
+            };
+            
+            const passwordGroup = document.createElement('div');
+            passwordGroup.style.marginBottom = '15px';
+            
+            const passwordLabel = document.createElement('label');
+            passwordLabel.textContent = '管理密码:';
+            passwordLabel.style.display = 'block';
+            passwordLabel.style.marginBottom = '5px';
+            passwordLabel.style.fontWeight = 'bold';
+            
+            const passwordInput = document.createElement('input');
+            passwordInput.type = 'password';
+            passwordInput.name = 'password';
+            passwordInput.value = config.admin_password || '';
+            passwordInput.style.width = '100%';
+            passwordInput.style.padding = '8px';
+            passwordInput.style.boxSizing = 'border-box';
+            
+            passwordGroup.appendChild(passwordLabel);
+            passwordGroup.appendChild(passwordInput);
+            
+            const submitButton = document.createElement('button');
+            submitButton.type = 'submit';
+            submitButton.textContent = '保存';
+            submitButton.style.background = '#007bff';
+            submitButton.style.color = 'white';
+            submitButton.style.border = 'none';
+            submitButton.style.padding = '10px 20px';
+            submitButton.style.borderRadius = '3px';
+            submitButton.style.cursor = 'pointer';
+            
+            form.appendChild(passwordGroup);
+            form.appendChild(submitButton);
+            
+            modalContent.appendChild(modalHeader);
+            modalContent.appendChild(form);
+            modal.appendChild(modalContent);
+            document.body.appendChild(modal);
+        }
     </script>
+</body>
+</html>`
+
+const loginHTML = `<!DOCTYPE html>
+<html>
+<head>
+    <title>Login - Git Sync Tool</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; display: flex; justify-content: center; align-items: center; height: 100vh; background: #f5f5f5; }
+        .login-container { background: white; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); width: 400px; }
+        h1 { text-align: center; margin-bottom: 30px; color: #333; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; font-weight: bold; color: #555; }
+        input { width: 100%; padding: 12px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 16px; }
+        button { width: 100%; background: #007bff; color: white; padding: 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:hover { background: #0056b3; }
+        .error { color: red; text-align: center; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <h1>🔄 Git Sync Tool</h1>
+        {{if .error}}
+        <div class="error">{{.error}}</div>
+        {{end}}
+        <form method="post" action="/login">
+            <div class="form-group">
+                <label>管理密码:</label>
+                <input type="password" name="password" required>
+            </div>
+            <button type="submit">登录</button>
+        </form>
+    </div>
 </body>
 </html>`
