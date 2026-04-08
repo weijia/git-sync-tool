@@ -118,7 +118,7 @@ func stopScheduler(id string) {
 }
 
 func loadConfig() {
-	data, err := ioutil.ReadFile(configFile)
+	data, err := os.ReadFile(configFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			config = Config{RepoPairs: []RepoPair{}}
@@ -126,7 +126,10 @@ func loadConfig() {
 		}
 		log.Fatal(err)
 	}
-	json.Unmarshal(data, &config)
+	if err := json.Unmarshal(data, &config); err != nil {
+		log.Fatalf("Error unmarshaling config: %v", err)
+	}
+	log.Printf("Config loaded successfully, AdminPassword set: %v", config.AdminPassword != "")
 }
 
 func saveConfig() error {
@@ -145,15 +148,25 @@ func authMiddleware(next http.Handler) http.Handler {
 		adminPassword := config.AdminPassword
 		configLock.RUnlock()
 
+		log.Printf("[Auth] Request: %s %s, AdminPassword set: %v", r.Method, r.URL.Path, adminPassword != "")
+
 		// 如果没有设置管理密码，直接通过
 		if adminPassword == "" {
+			log.Printf("[Auth] No password set, allowing access")
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// 检查会话中的认证状态
-		session, _ := r.Cookie("auth")
+		session, err := r.Cookie("auth")
+		if err != nil {
+			log.Printf("[Auth] No auth cookie found: %v", err)
+		} else {
+			log.Printf("[Auth] Auth cookie found: %v, matches: %v", session.Value != "", session.Value == adminPassword)
+		}
+
 		if session != nil && session.Value == adminPassword {
+			log.Printf("[Auth] Authenticated, allowing access")
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -162,6 +175,7 @@ func authMiddleware(next http.Handler) http.Handler {
 		if r.Method == "POST" && r.URL.Path == "/login" {
 			r.ParseForm()
 			password := r.Form.Get("password")
+			log.Printf("[Auth] Login attempt, password match: %v", password == adminPassword)
 			if password == adminPassword {
 				// 设置认证cookie
 				cookie := &http.Cookie{
@@ -174,12 +188,15 @@ func authMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			// 密码错误，返回登录页面
+			w.WriteHeader(http.StatusUnauthorized)
 			tmpl := template.Must(template.New("login").Parse(loginHTML))
 			tmpl.Execute(w, map[string]string{"error": "密码错误"})
 			return
 		}
 
 		// 未认证，返回登录页面
+		log.Printf("[Auth] Not authenticated, showing login page")
+		w.WriteHeader(http.StatusUnauthorized)
 		tmpl := template.Must(template.New("login").Parse(loginHTML))
 		tmpl.Execute(w, nil)
 		return
@@ -1019,7 +1036,7 @@ const indexHTML = `<!DOCTYPE html>
             modalHeader.appendChild(closeButton);
             
             const form = document.createElement('form');
-            form.onSubmit = async (e) => {
+            form.onsubmit = async (e) => {
                 e.preventDefault();
                 const password = form.password.value;
                 
@@ -1028,14 +1045,19 @@ const indexHTML = `<!DOCTYPE html>
                     admin_password: password
                 };
                 
-                await fetch('/api/config', {
+                const res = await fetch('/api/config', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(updateConfig)
                 });
                 
-                alert('密码设置成功！');
-                document.body.removeChild(modal);
+                if (res.ok) {
+                    alert('密码设置成功！');
+                    document.body.removeChild(modal);
+                } else {
+                    const error = await res.text();
+                    alert('密码设置失败：' + error);
+                }
             };
             
             const passwordGroup = document.createElement('div');
