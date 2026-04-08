@@ -336,9 +336,10 @@ func syncRepo(pair RepoPair) {
 	cmd := exec.Command("git", "clone", sourceURL, tmpDir)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// 设置环境变量，禁用 Git 凭证提示
+	// 设置环境变量，使用 Git 凭证助手
 	env := os.Environ()
 	env = append(env, "GIT_TERMINAL_PROMPT=0")
+	env = append(env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 	cmd.Env = env
 	err := cmd.Run()
 
@@ -353,9 +354,10 @@ func syncRepo(pair RepoPair) {
 		cmd = exec.Command("git", "clone", httpURL, tmpDir)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		// 设置环境变量，禁用 Git 凭证提示
-		env := os.Environ()
+		// 设置环境变量，使用 Git 凭证助手
+		env = os.Environ()
 		env = append(env, "GIT_TERMINAL_PROMPT=0")
+		env = append(env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 		cmd.Env = env
 		err = cmd.Run()
 		if err != nil {
@@ -431,9 +433,10 @@ func syncRepo(pair RepoPair) {
 	cmd.Dir = tmpDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// 设置环境变量，禁用 Git 凭证提示
+	// 设置环境变量，使用 Git 凭证助手
 	env = os.Environ()
 	env = append(env, "GIT_TERMINAL_PROMPT=0")
+	env = append(env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 	cmd.Env = env
 	if err := cmd.Run(); err != nil {
 		// 忽略拉取失败的错误，可能是因为目标仓库为空
@@ -471,9 +474,10 @@ func syncRepo(pair RepoPair) {
 	cmd.Dir = tmpDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// 设置环境变量，禁用 Git 凭证提示
+	// 设置环境变量，使用 Git 凭证助手
 	env = os.Environ()
 	env = append(env, "GIT_TERMINAL_PROMPT=0")
+	env = append(env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 	cmd.Env = env
 	if err := cmd.Run(); err != nil {
 		// 尝试推送 master 分支
