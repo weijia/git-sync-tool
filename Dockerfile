@@ -12,6 +12,9 @@ FROM alpine:latest
 
 WORKDIR /app
 
+# 安装 Git
+RUN apk add --no-cache git
+
 COPY --from=builder /app/git-sync-tool .
 
 EXPOSE 8080

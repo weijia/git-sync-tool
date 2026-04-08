@@ -1,6 +1,6 @@
 # Git Sync Tool
 
-一个用于同步 Git 仓库对的 Web 工具，支持定时同步和 GitHub Actions 自动生成。
+一个用于双向同步 Git 仓库对的 Web 工具，支持定时同步和详细的同步日志。
 
 ## 功能特性
 
@@ -8,8 +8,9 @@
 - ✅ 设置源仓库和目标仓库的 Token
 - ✅ 定时自动同步（支持间隔时间设置）
 - ✅ 手动触发同步
-- ✅ 自动生成 GitHub Actions 工作流
-- ✅ 自动构建并推送 Docker 镜像到 Docker Hub
+- ✅ 双向同步，不会覆盖任何仓库内容
+- ✅ 详细的同步日志记录
+- ✅ 导出和导入配置
 - ✅ 实时查看同步状态
 
 ## 快速开始
@@ -29,61 +30,17 @@ go run main.go
 1. 打开浏览器访问 `http://localhost:8080`
 2. 填写 Repo Pair 信息：
    - **Name**: 配对名称
-   - **Source Repo**: 源仓库（格式：owner/repo）
+   - **Source Repo**: 源仓库（格式：owner/repo 或完整 URL）
    - **Source Token**: 源仓库访问 Token
-   - **Target Repo**: 目标仓库（格式：owner/repo）
+   - **Target Repo**: 目标仓库（格式：owner/repo 或完整 URL）
    - **Target Token**: 目标仓库访问 Token
    - **Sync Schedule**: 同步间隔（如 `1h`, `30m`, `3600s`），留空则仅手动同步
-   - **Enable GitHub Actions**: 是否自动生成 CI/CD 工作流
-   - **Docker Image**: Docker 镜像名称
-   - **Docker Hub User/Pass**: Docker Hub 凭证
 
 3. 点击 **Save** 保存配置
 4. 点击 **Sync Now** 立即触发同步
-
-## 生成的 GitHub Actions
-
-启用 GitHub Actions 后，工具会在目标仓库中创建 `.github/workflows/docker-build.yml`：
-
-```yaml
-name: Build and Push Docker Image
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
-    
-    - name: Login to Docker Hub
-      uses: docker/login-action@v2
-      with:
-        username: <your-dockerhub-user>
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
-    
-    - name: Build and push
-      uses: docker/build-push-action@v4
-      with:
-        context: .
-        push: true
-        tags: <dockerhub-user>/<image-name>:latest
-```
-
-### 配置 Docker Hub Secret
-
-在目标 GitHub 仓库中设置 Secret：
-1. 进入仓库 → Settings → Secrets and variables → Actions
-2. 添加 New repository secret
-3. Name: `DOCKERHUB_TOKEN`
-4. Value: 你的 Docker Hub Access Token（不是密码）
+5. 点击 **Logs** 查看同步日志
+6. 点击 **Export Config** 导出配置
+7. 点击 **Import Config** 导入配置
 
 ## API 接口
 
@@ -92,6 +49,9 @@ jobs:
 
 ### POST /api/pairs
 添加新的 Repo Pair
+
+### GET /api/pairs/{id}
+获取指定 Repo Pair 的详细信息
 
 ### PUT /api/pairs/{id}
 更新指定 Repo Pair
@@ -104,6 +64,12 @@ jobs:
 
 ### GET /api/pairs/{id}/status
 获取同步状态
+
+### GET /api/config
+获取完整的配置
+
+### POST /api/config
+导入配置
 
 ## 配置文件
 
@@ -122,10 +88,13 @@ jobs:
       "schedule": "1h",
       "last_sync": "2024-01-01T12:00:00Z",
       "status": "success",
-      "enable_actions": true,
-      "docker_image": "my-app",
-      "docker_hub_user": "myuser",
-      "docker_hub_pass": "xxx"
+      "logs": [
+        "2024-01-01 12:00:00: 开始同步",
+        "2024-01-01 12:00:01: 源仓库克隆成功",
+        "2024-01-01 12:00:02: 目标仓库推送成功",
+        "2024-01-01 12:00:03: 源仓库推送成功",
+        "2024-01-01 12:00:03: 双向同步完成: 2024-01-01T12:00:03Z"
+      ]
     }
   ]
 }
@@ -136,16 +105,36 @@ jobs:
 ⚠️ **重要：**
 - 妥善保管 `config.json` 文件，包含敏感 Token
 - 不要将配置文件提交到版本控制
-- 建议使用 Docker Hub Access Token 而非密码
 - 生产环境请使用 HTTPS
 
 ## 依赖
 
 - Go 1.21+
 - github.com/go-git/go-git/v5
+- github.com/go-git/go-git/v5/config
 - github.com/gorilla/mux
-- github.com/google/go-github/v57
-- golang.org/x/oauth2
+
+## Docker 部署
+
+### 构建 Docker 镜像
+
+```bash
+docker build -t git-sync-tool .
+```
+
+### 运行 Docker 容器
+
+```bash
+docker run -d -p 8080:8080 --name git-sync-tool git-sync-tool
+```
+
+### Docker Stack 部署
+
+使用 `docker-compose.yml` 文件进行 Docker Stack 部署：
+
+```bash
+docker stack deploy -c docker-compose.yml git-sync
+```
 
 ## License
 
